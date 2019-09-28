@@ -37,32 +37,29 @@ def init_logging():
 # Function to get a list of all dates that are to be downloaded
 def get_dates():
     
-    # Get a list of all dates for which downloads were done
-    year = datetime.now(tz).date().year 
-    folder_date = []
-    
-    if os.path.exists('output/{}'.format(year)):
-        foldernames = os.listdir('output/{}'.format(year))
-        folder_CW = [foldername for foldername in foldernames if not foldername.startswith('.')]
-        
-        for i in range(0, len(folder_CW)):
-            for foldername in os.listdir('output/{}/{}'.format(year, folder_CW[i])):
-                if not foldername.startswith('.'):
-                    folder_date += [foldername]
-                
-    # Get a list of all available dates on IEX side
+    # Get earliest date available on IEX side
     date_today = datetime.today().date()
-    date = date_today - timedelta(weeks = 4) # 30 calendar days given
-    date = date - timedelta(days = date.isoweekday()) # move to monday
+    IEX_date = date_today - timedelta(days = 29) # 30 calendar days given by IEX
 
-    IEX_date = []
-    while (date < date_today):
-        if date.isoweekday() <= 5:
-            IEX_date += [date.strftime('%Y%m%d')]
-        date += timedelta(days = 1)
-        
-    # Get a list of all dates for which downloads are todo
-    todo_dates = [date for date in IEX_date if date not in folder_date]
+    # Get last date for which download was done to get start date
+    try:
+        folder_date = []
+        year = max([name for name in os.listdir('output/') if not name.startswith('.')])
+        foldernames = os.listdir('output/{}'.format(year))
+        folder_CW = [name for name in foldernames if not name.startswith('.')]
+
+        for i in range(len(folder_CW)):
+            foldernames = os.listdir('output/{}/{}'.format(year, folder_CW[i]))
+            folder_date += [name for name in foldernames if not name.startswith('.')]
+        last_date = datetime.strptime(max(folder_date)[0:8], '%Y%m%d').date()
+
+        start_date = max(IEX_date, last_date + timedelta(days=1))
+    except:
+        start_date = IEX_date
+
+    # Get todo dates with weekends filtered out
+    dates = [start_date + timedelta(days=i) for i in range((date_today - start_date).days)]
+    todo_dates = [date.strftime('%Y%m%d') for date in dates if date.isoweekday() <= 5]
 
     return(todo_dates)
 
@@ -98,7 +95,7 @@ def get_tickers(path):
 
 
 # Function for downloading the data for 1 IEX ticker
-def get_csv(session, api_url, idx, ticker, path, date_str):
+def get_csv(session, idx, date_str, path, ticker, api_url):
     
     with requests.Session() as session:
         response = session.get(api_url)
@@ -118,13 +115,13 @@ def get_csv(session, api_url, idx, ticker, path, date_str):
         # Case when error status code is returned
         else:
             csv = None
-            write_csv(csv, idx, ticker, path, date_str, api_url, status = 'ERROR')
+            write_csv(csv, idx, date_str, path, ticker, api_url, status = 'ERROR')
 
     return(None)
 
 
 # Function to write the downloaded data for 1 IEX ticker to file
-def write_csv(csv, idx, ticker, path, date_str, api_url, status = None):
+def write_csv(csv, idx, date_str, path, ticker, api_url, status = None):
         
     # Check if file is empty
     if status == 'NONE':
@@ -164,7 +161,7 @@ def asyncio_prep(date_str):
     path = get_path(date_str)
     tickers = get_tickers(path)
     api_urls = [base_url.format(ticker, date_str, os.environ['TOKEN']) for ticker in tickers]
-    params = [path, tickers, api_urls, date_str]
+    params = {'date_str': date_str, 'path': path, 'tickers': tickers, 'api_urls': api_urls}
 
     status = '\n{}\n# Download for: {}\n{}\n'.format(''.join(['#']*70), date_str, ''.join(['#']*70))
     print(status)
@@ -176,19 +173,15 @@ def asyncio_prep(date_str):
 # Asynchronous function to conduct the download session for 1 date
 async def download_tickers_asynchronous(params):
     
-    path = params[0]
-    tickers = params[1]
-    api_urls = params[2]
-    date_str = params[3]
-    
     with ThreadPoolExecutor(max_workers=4) as executor:
         with requests.Session() as session:
             
             loop = asyncio.get_event_loop()
             tasks = []
-            for idx in range(0, len(api_urls)):
-                tasks.append(loop.run_in_executor(executor, get_csv, *(session, api_urls[idx], idx, 
-                                                                     tickers[idx], path, date_str)))
+            for idx in range(len(params['tickers'])):
+                tasks.append(loop.run_in_executor(executor, get_csv, 
+                                                  *(session, idx, params['date_str'], params['path'], 
+                                                  params['tickers'][idx],  params['api_urls'][idx])))
                 tasks.append(await asyncio.sleep(0.01)) 
 
     return(None)
