@@ -39,7 +39,7 @@ def get_dates():
     
     # Get earliest date available on IEX side
     date_today = datetime.today().date()
-    IEX_date = date_today - timedelta(days = 29) # 30 calendar days given by IEX
+    IEX_date = date_today - timedelta(days = 30) # 30 trailing calendar days acc. to IEX docu
 
     # Get last date for which download was done to get start date
     try:
@@ -101,57 +101,52 @@ def get_csv(session, idx, date_str, path, ticker, api_url):
         response = session.get(api_url)
 
         if response.status_code == 200:
-            data = response.content.decode('utf8')
+            raw_data = response.content.decode('utf8')
 
             # Case when empty file is returned with success 200 response
-            if data == '':
-                csv = None
-                write_csv(csv, idx, ticker, path, date_str, api_url, status = 'NONE')
+            if raw_data == '':
+                data = None
+                write_csv(data, idx, ticker, path, date_str, api_url, status = 'NONE')
             # Case when requested file is returned with success 200 response
             else: 
-                csv = pd.read_csv(io.StringIO(data), sep = ',')
-                write_csv(csv, idx, ticker, path, date_str, api_url)
+                data = pd.read_csv(io.StringIO(raw_data), sep = ',')
+                write_csv(data, idx, ticker, path, date_str, api_url, status = 'DONE')
 
         # Case when error status code is returned
         else:
-            csv = None
-            write_csv(csv, idx, date_str, path, ticker, api_url, status = 'ERROR')
+            data = response.status_code
+            write_csv(data, idx, date_str, path, ticker, api_url, status = 'ERROR')
 
     return(None)
 
 
 # Function to write the downloaded data for 1 IEX ticker to file
-def write_csv(csv, idx, date_str, path, ticker, api_url, status = None):
+def write_csv(data, idx, date_str, path, ticker, api_url, status):
         
-    # Check if file is empty
+    # Case when empty file is returned with success 200 response
     if status == 'NONE':
-
-        # Output file and print status (to keep track of missing tickers)
         with open('{}/NONE/NONE_{}_{}.txt'.format(path, ticker, date_str),'w+') as textfile:
             textfile.write(api_url)
-        
         status = '{} | {} | {} | {} | NONE'.format(datetime.now(tz), date_str, idx, ticker)
         print(status + '\n' + api_url + '\n')
         logging.info(status + '\n' + api_url + '\n')
 
-    # Check if status code was not 200
-    elif status == 'ERROR':
-
-        # Output file and print status (to keep track of missing tickers)
-        with open('{}/ERROR/ERROR_{}_{}.txt'.format(path, ticker, date_str),'w+') as textfile:
-            textfile.write(api_url)
-        
-        status = '{} | {} | {} | {} | ERROR'.format(datetime.now(tz), date_str, idx, ticker)
-        print(status + '\n' + api_url + '\n')
-        logging.info(status + '\n' + api_url + '\n')
-        
-    else:
-        
-        csv.to_csv('{}/DONE/{}_{}.csv'.format(path, ticker, date_str))
+    # Case when requested file is returned with success 200 response
+    elif status == 'DONE':
+        data.to_csv('{}/DONE/{}_{}.csv'.format(path, ticker, date_str))
         status = '{} | {} | {} | {} \n'.format(datetime.now(tz), date_str, idx, ticker)
         print(status)
         logging.info(status)
 
+    # Case when error status code is returned
+    elif status == 'ERROR':
+        with open('{}/ERROR/ERROR_{}_{}.txt'.format(path, ticker, date_str),'w+') as textfile:
+            textfile.write("status_code: {}\n".format(data))
+            textfile.write(api_url)
+        status = '{} | {} | {} | {} | ERROR {}'.format(datetime.now(tz), date_str, idx, ticker, data)
+        print(status + '\n' + api_url + '\n')
+        logging.info(status + '\n' + api_url + '\n')
+        
 
 # Function to prepare all parameters for the download session for 1 date
 def asyncio_prep(date_str):
@@ -173,7 +168,7 @@ def asyncio_prep(date_str):
 # Asynchronous function to conduct the download session for 1 date
 async def download_tickers_asynchronous(params):
     
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         with requests.Session() as session:
             
             loop = asyncio.get_event_loop()
@@ -208,10 +203,9 @@ if __name__ == '__main__':
         loop.run_until_complete(download_tickers_asynchronous(params))
 
         # Add text file to indicate termination
-        path = params[0]
-        with open('{}/terminated_{}.txt'.format(path, date),'w+') as textfile:
+        with open('{}/terminated_{}.txt'.format(params['path'], date),'w+') as textfile:
             textfile.write(date)
 
         # Zip the folder for the date
-        shutil.make_archive(path, 'zip', path)
-        shutil.rmtree(path)
+        shutil.make_archive(params['path'], 'zip', params['path'])
+        shutil.rmtree(params['path'])
